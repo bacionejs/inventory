@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Inventory</title>
+<style>
+body{font-family:sans-serif;margin:0;padding:10px;font-size:18px}
+table{border-collapse:collapse;margin-top:10px;width:100%;font-size:18px}
+td,th{border:1px solid #aaa;padding:8px}
+input{width:100%;box-sizing:border-box;padding:6px;font-size:18px}
+input.small{width:100px}
+button{padding:8px 12px;font-size:20px;cursor:pointer}
+button + button{margin-left:6px}
+td.action{white-space:nowrap}
+#topButtons{margin-bottom:10px}
+</style>
+</head>
+<body>
+
+<h2>Inventory</h2>
+
+<div id="topButtons">
+  <button id="exportBtn">📤 Export</button>
+  <button id="importBtn">📥 Import</button>
+  <button id="clearBtn">🗑️ Clear DB</button>
+  <input type="file" id="importFile" style="display:none" accept=".json">
+</div>
+
+<table id="tbl">
+  <tr>
+    <th>Name</th><th>Model</th><th>Price</th><th>Qty</th><th>Action</th>
+  </tr>
+</table>
+
+<script>
+// --- OPEN DATABASE ---
+let db;
+let req = indexedDB.open("inventoryDB", 1);
+req.onupgradeneeded = e => {
+  db = e.target.result;
+  if(!db.objectStoreNames.contains("items")) {
+    db.createObjectStore("items", { keyPath: "id", autoIncrement: true });
+  }
+};
+req.onsuccess = e => { db = e.target.result; load(); };
+
+// --- LOAD RECORDS ---
+function load(){
+  let tbl = document.getElementById("tbl");
+  while(tbl.rows.length > 1) tbl.deleteRow(1);
+
+  let tx = db.transaction("items", "readonly");
+  tx.objectStore("items").getAll().onsuccess = e => {
+    e.target.result.forEach(item => addRow(item));
+    addRow(); // blank add row
+  };
+}
+
+// --- BUILD ONE ROW ---
+function addRow(data){
+  let tr = document.createElement("tr");
+  let fields = ["name","model","price","quantity"];
+  let inputs = {};
+
+  fields.forEach(f => {
+    let td = document.createElement("td");
+    let inp = document.createElement("input");
+    inp.value = data ? data[f] : "";
+    inp.type = (f === "price" || f === "quantity") ? "number" : "text";
+    if(f === "price") inp.step = "0.01";
+    if(f !== "name") inp.className = "small";
+    td.appendChild(inp);
+    tr.appendChild(td);
+    inputs[f] = inp;
+  });
+
+  let actionCell = document.createElement("td");
+  actionCell.className = "action";
+
+  let mainBtn = document.createElement("button");
+  mainBtn.textContent = data ? "🔄" : "✔️";
+  mainBtn.title = data ? "Update" : "Submit";
+  mainBtn.onclick = () => {
+    let obj = {
+      name: inputs.name.value.trim(),
+      model: inputs.model.value.trim(),
+      price: parseFloat(inputs.price.value) || 0,
+      quantity: parseInt(inputs.quantity.value || "0", 10) || 0
+    };
+    let tx = db.transaction("items", "readwrite");
+    let store = tx.objectStore("items");
+    if(data){
+      obj.id = data.id;
+      store.put(obj);
+    } else {
+      store.add(obj);
+    }
+    tx.oncomplete = load;
+  };
+  actionCell.appendChild(mainBtn);
+
+  if(data){
+    let del = document.createElement("button");
+    del.textContent = "❌";
+    del.title = "Delete";
+    del.onclick = () => {
+      if(!confirm("Delete this item?")) return;
+      let tx = db.transaction("items", "readwrite");
+      tx.objectStore("items").delete(data.id);
+      tx.oncomplete = load;
+    };
+    actionCell.appendChild(del);
+  }
+
+  tr.appendChild(actionCell);
+  document.getElementById("tbl").appendChild(tr);
+}
+
+// --- EXPORT ---
+document.getElementById("exportBtn").onclick = () => {
+  let tx = db.transaction("items", "readonly");
+  tx.objectStore("items").getAll().onsuccess = e => {
+    let data = e.target.result;
+    let blob = new Blob([JSON.stringify(data, null, 2)], {type:"application/json"});
+    let url = URL.createObjectURL(blob);
+    let a = document.createElement("a");
+    a.href = url;
+    a.download = "inventory.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+};
+
+// --- IMPORT ---
+document.getElementById("importBtn").onclick = () => {
+  document.getElementById("importFile").click();
+};
+
+document.getElementById("importFile").onchange = e => {
+  let file = e.target.files[0];
+  if(!file) return;
+  let reader = new FileReader();
+  reader.onload = evt => {
+    try {
+      let items = JSON.parse(evt.target.result);
+      let tx = db.transaction("items", "readwrite");
+      let store = tx.objectStore("items");
+      items.forEach(item => {
+        let copy = {...item};
+        delete copy.id;
+        store.add(copy);
+      });
+      tx.oncomplete = load;
+    } catch(err) {
+      alert("Invalid JSON file");
+      console.error(err);
+    }
+  };
+  reader.readAsText(file);
+};
+
+// --- CLEAR DATABASE ---
+document.getElementById("clearBtn").onclick = () => {
+  if(!confirm("Are you sure you want to clear the entire database?")) return;
+  let tx = db.transaction("items", "readwrite");
+  tx.objectStore("items").clear();
+  tx.oncomplete = load;
+};
+</script>
+
+</body>
+</html>
