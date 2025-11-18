@@ -5,25 +5,37 @@
 <title>Inventory</title>
 <style>
 body{font-family:sans-serif;margin:0;padding:10px;font-size:18px}
-table{border-collapse:collapse;margin-top:10px;width:100%;font-size:38px}
+table{border-collapse:collapse;margin-top:10px;width:100%;font-size:18px}
 td,th{border:1px solid #aaa;padding:1px}
 
 /* --- NEW CSS FOR EDITABLE CELLS --- */
 td[contenteditable="true"] {
-  /* Visually indicates the cell is editable when focused */
   outline: 1px dashed #007bff; 
-  /* Ensures consistency in padding */
   padding: 8px; 
 }
 
-/* Optional: To give a defined width to small fields like Price and Qty */
+/* Style for the input field used with datalist (combobox) */
+input.combobox {
+  padding: 7px 0;
+  font-size: 18px;
+  width: 100%;
+  box-sizing: border-box;
+  border: none;
+}
+
 td.small-cell {
-    width: 100px;
-    text-align: left; /* Helps align number data */
+    width: 50px;
+    text-align: left;
+}
+
+td.id-cell {
+    width: 50px;
+    text-align: center;
 }
 /* --- END NEW CSS --- */
 
-button{padding:8px 12px;font-size:30px;cursor:pointer}
+button{padding:8px 12px;font-size:20px;
+cursor:pointer}
 button + button{margin-left:6px}
 td.action{white-space:nowrap}
 #topButtons{margin-bottom:10px}
@@ -34,7 +46,7 @@ td.action{white-space:nowrap}
 <h2>Inventory</h2>
 
 <div id="topButtons">
-  <button id="exportBtn">📤 Export</button>
+  <button id="updateAllBtn">💾 Update All</button> <button id="exportBtn">📤 Export</button>
   <button id="importBtn">📥 Import</button>
   <button id="clearBtn">🗑️ Clear DB</button>
   <input type="file" id="importFile" style="display:none" accept=".json">
@@ -42,11 +54,14 @@ td.action{white-space:nowrap}
 
 <table id="tbl">
   <tr>
-    <th>Name</th><th>Model</th><th>Price</th><th>Qty</th><th>Action</th>
+    <th>ID</th><th>Name</th><th>Model</th><th>Price</th><th>Qty</th><th>Action</th>
   </tr>
 </table>
 
 <script>
+let uniqueNames = [];
+let allRecords = []; // Global array to store current DB records, needed for update logic
+
 // --- OPEN DATABASE ---
 let db;
 let req = indexedDB.open("inventoryDB", 1);
@@ -58,74 +73,167 @@ req.onupgradeneeded = e => {
 };
 req.onsuccess = e => { db = e.target.result; load(); };
 
-// --- LOAD RECORDS ---
+// --- LOAD RECORDS (MODIFIED to store records globally) ---
 function load(){
   let tbl = document.getElementById("tbl");
   while(tbl.rows.length > 1) tbl.deleteRow(1);
-
+  
+  allRecords = []; // Clear global records array
   let tx = db.transaction("items", "readonly");
-  tx.objectStore("items").getAll().onsuccess = e => {
-    e.target.result.forEach(item => addRow(item));
-    addRow(); // blank add row
+  let store = tx.objectStore("items");
+  
+  let cursorReq = store.openCursor();
+  
+  cursorReq.onsuccess = e => {
+      let cursor = e.target.result;
+      if (cursor) {
+          allRecords.push(cursor.value);
+          cursor.continue();
+      } else {
+          // Finished reading records
+          // 1. Extract unique names
+          uniqueNames = [...new Set(allRecords.map(item => item.name).filter(name => name))].sort();
+          
+          // 2. Add existing rows
+          allRecords.forEach(item => addRow(item, false));
+          
+          // 3. Add blank add row (The submit row)
+          addRow(null, true); 
+      }
   };
 }
 
-// --- BUILD ONE ROW (MODIFIED TO USE contenteditable) ---
-function addRow(data){
+// --- UPDATE ALL FUNCTION (NEW) ---
+document.getElementById("updateAllBtn").onclick = updateAll;
+
+function updateAll() {
+    let tbl = document.getElementById("tbl");
+    // All updates/inserts must happen in a single transaction
+    let tx = db.transaction("items", "readwrite");
+    let store = tx.objectStore("items");
+    let itemsToProcess = [];
+
+    // 1. Process all existing rows and the single new row
+    for (let i = 1; i < tbl.rows.length; i++) {
+        let tr = tbl.rows[i];
+        let isNewRow = (i === tbl.rows.length - 1);
+        let originalData = isNewRow ? null : allRecords[i - 1]; // Use stored data for original ID
+        
+        // Helper function to get value from TD (editable) or INPUT (combobox)
+        function getCellValue(index) {
+            let cell = tr.cells[index];
+            if (cell.children.length > 0 && cell.children[0].tagName === 'INPUT') {
+                return cell.children[0].value.trim();
+            }
+            return cell.textContent.trim();
+        }
+
+        // Gather all data from the cells
+        let nameValue = getCellValue(1); // Name is column index 1
+        
+        let obj = {
+            name: nameValue,
+            model: getCellValue(2),
+            price: parseFloat(getCellValue(3)) || 0,
+            quantity: parseInt(getCellValue(4) || "0", 10) || 0 
+        };
+        
+        // Skip empty new item row submission
+        if (isNewRow && !obj.name && !obj.model) {
+            continue; 
+        }
+
+        if (isNewRow) {
+            // New Item: Use store.add (ID is auto-generated)
+            store.add(obj);
+        } else {
+            // Existing Item: Check for ID change
+            const originalId = originalData.id;
+            const newIdText = tr.cells[0].textContent;
+            const newId = parseInt(newIdText) || originalId;
+
+            if (newId !== originalId) {
+                // ID changed: Delete old, add new
+                store.delete(originalId);
+                obj.id = newId;
+                store.add(obj);
+            } else {
+                // ID unchanged: Standard update
+                obj.id = originalId;
+                store.put(obj);
+            }
+        }
+    }
+    
+    // 2. Monitor Transaction Completion
+    tx.oncomplete = load;
+    tx.onerror = (e) => {
+        alert("Error saving records. One of the manually entered IDs might already exist or be invalid.");
+        console.error("TX Error:", e);
+        load();
+    };
+}
+
+
+// --- BUILD ONE ROW (MODIFIED: Remove update button logic) ---
+function addRow(data, isNewRow){
   let tr = document.createElement("tr");
-  let fields = ["name","model","price","quantity"];
-  let editableCells = {};
+  let fields = ["id", "name", "model", "price", "quantity"];
+  let inputElements = {}; // Still useful for reference but not strictly needed for updateAll
 
   fields.forEach(f => {
     let td = document.createElement("td");
     
-    // Set content and make it editable
-    td.textContent = data ? data[f] : "";
-    td.contentEditable = "true";
-    
-    // Apply special styling/handling for number fields
-    if(f === "price" || f === "quantity") {
-      td.classList.add("small-cell"); // Using the new CSS class
+    if (f === "id") {
+        td.textContent = data ? data[f] : "";
+        td.classList.add("id-cell");
+        
+        if (!isNewRow) {
+            td.contentEditable = "true";
+        }
+        inputElements[f] = td;
+        
+    } else if (f === "name" && isNewRow) {
+      // Datalist/Combobox for new row Name
+      let input = document.createElement("input");
+      input.type = "text";
+      input.classList.add("combobox");
+      let listId = "name_options";
+      input.setAttribute("list", listId); 
+
+      let datalist = document.createElement("datalist");
+      datalist.id = listId;
+
+      uniqueNames.forEach(name => {
+        let option = document.createElement("option");
+        option.value = name;
+        datalist.appendChild(option);
+      });
+      
+      td.appendChild(input);
+      td.appendChild(datalist);
+      inputElements[f] = input;
+      
+    } else {
+      // Editable TD for existing rows and other fields
+      td.textContent = data ? data[f] : "";
+      td.contentEditable = "true";
+      
+      if(f === "price" || f === "quantity") {
+        td.classList.add("small-cell");
+      }
+      
+      inputElements[f] = td;
     }
 
     tr.appendChild(td);
-    editableCells[f] = td; // Store the reference to the editable cell
   });
 
   let actionCell = document.createElement("td");
   actionCell.className = "action";
 
-  let mainBtn = document.createElement("button");
-  mainBtn.textContent = data ? "🔄" : "✔️";
-  mainBtn.title = data ? "Update" : "Submit";
-  mainBtn.onclick = () => {
-    // Collect data directly from the editable cell's textContent
-    let obj = {
-      name: editableCells.name.textContent.trim(),
-      model: editableCells.model.textContent.trim(),
-      // Use parseFloat/parseInt and fallback to 0 if the content is not a valid number
-      price: parseFloat(editableCells.price.textContent) || 0,
-      quantity: parseInt(editableCells.quantity.textContent || "0", 10) || 0 
-    };
-    
-    // Simple validation for new records
-    if (!data && !obj.name.length && !obj.model.length) {
-        alert("Please enter a Name or Model for the new item.");
-        return;
-    }
-
-    let tx = db.transaction("items", "readwrite");
-    let store = tx.objectStore("items");
-    if(data){
-      obj.id = data.id;
-      store.put(obj);
-    } else {
-      store.add(obj);
-    }
-    tx.oncomplete = load;
-  };
-  actionCell.appendChild(mainBtn);
-
+  // REMOVED: mainBtn (Update/Submit) logic
+  
   if(data){
     let del = document.createElement("button");
     del.textContent = "❌";
@@ -143,7 +251,8 @@ function addRow(data){
   document.getElementById("tbl").appendChild(tr);
 }
 
-// --- EXPORT ---
+// --- EXPORT, IMPORT, CLEAR DB functions remain unchanged ---
+
 document.getElementById("exportBtn").onclick = () => {
   let tx = db.transaction("items", "readonly");
   tx.objectStore("items").getAll().onsuccess = e => {
@@ -160,7 +269,6 @@ document.getElementById("exportBtn").onclick = () => {
   };
 };
 
-// --- IMPORT ---
 document.getElementById("importBtn").onclick = () => {
   document.getElementById("importFile").click();
 };
@@ -188,7 +296,6 @@ document.getElementById("importFile").onchange = e => {
   reader.readAsText(file);
 };
 
-// --- CLEAR DATABASE ---
 document.getElementById("clearBtn").onclick = () => {
   if(!confirm("Are you sure you want to clear the entire database?")) return;
   let tx = db.transaction("items", "readwrite");
