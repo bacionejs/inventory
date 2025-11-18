@@ -5,11 +5,25 @@
 <title>Inventory</title>
 <style>
 body{font-family:sans-serif;margin:0;padding:10px;font-size:18px}
-table{border-collapse:collapse;margin-top:10px;width:100%;font-size:18px}
-td,th{border:1px solid #aaa;padding:8px}
-input{width:100%;box-sizing:border-box;padding:6px;font-size:18px}
-input.small{width:100px}
-button{padding:8px 12px;font-size:20px;cursor:pointer}
+table{border-collapse:collapse;margin-top:10px;width:100%;font-size:38px}
+td,th{border:1px solid #aaa;padding:1px}
+
+/* --- NEW CSS FOR EDITABLE CELLS --- */
+td[contenteditable="true"] {
+  /* Visually indicates the cell is editable when focused */
+  outline: 1px dashed #007bff; 
+  /* Ensures consistency in padding */
+  padding: 8px; 
+}
+
+/* Optional: To give a defined width to small fields like Price and Qty */
+td.small-cell {
+    width: 100px;
+    text-align: left; /* Helps align number data */
+}
+/* --- END NEW CSS --- */
+
+button{padding:8px 12px;font-size:30px;cursor:pointer}
 button + button{margin-left:6px}
 td.action{white-space:nowrap}
 #topButtons{margin-bottom:10px}
@@ -56,22 +70,26 @@ function load(){
   };
 }
 
-// --- BUILD ONE ROW ---
+// --- BUILD ONE ROW (MODIFIED TO USE contenteditable) ---
 function addRow(data){
   let tr = document.createElement("tr");
   let fields = ["name","model","price","quantity"];
-  let inputs = {};
+  let editableCells = {};
 
   fields.forEach(f => {
     let td = document.createElement("td");
-    let inp = document.createElement("input");
-    inp.value = data ? data[f] : "";
-    inp.type = (f === "price" || f === "quantity") ? "number" : "text";
-    if(f === "price") inp.step = "0.01";
-    if(f !== "name") inp.className = "small";
-    td.appendChild(inp);
+    
+    // Set content and make it editable
+    td.textContent = data ? data[f] : "";
+    td.contentEditable = "true";
+    
+    // Apply special styling/handling for number fields
+    if(f === "price" || f === "quantity") {
+      td.classList.add("small-cell"); // Using the new CSS class
+    }
+
     tr.appendChild(td);
-    inputs[f] = inp;
+    editableCells[f] = td; // Store the reference to the editable cell
   });
 
   let actionCell = document.createElement("td");
@@ -81,12 +99,21 @@ function addRow(data){
   mainBtn.textContent = data ? "🔄" : "✔️";
   mainBtn.title = data ? "Update" : "Submit";
   mainBtn.onclick = () => {
+    // Collect data directly from the editable cell's textContent
     let obj = {
-      name: inputs.name.value.trim(),
-      model: inputs.model.value.trim(),
-      price: parseFloat(inputs.price.value) || 0,
-      quantity: parseInt(inputs.quantity.value || "0", 10) || 0
+      name: editableCells.name.textContent.trim(),
+      model: editableCells.model.textContent.trim(),
+      // Use parseFloat/parseInt and fallback to 0 if the content is not a valid number
+      price: parseFloat(editableCells.price.textContent) || 0,
+      quantity: parseInt(editableCells.quantity.textContent || "0", 10) || 0 
     };
+    
+    // Simple validation for new records
+    if (!data && !obj.name.length && !obj.model.length) {
+        alert("Please enter a Name or Model for the new item.");
+        return;
+    }
+
     let tx = db.transaction("items", "readwrite");
     let store = tx.objectStore("items");
     if(data){
@@ -172,3 +199,4 @@ document.getElementById("clearBtn").onclick = () => {
 
 </body>
 </html>
+
